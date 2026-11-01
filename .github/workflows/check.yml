@@ -45,26 +45,29 @@ jobs:
         run: |
           set -uo pipefail
           UA="Mozilla/5.0 (compatible; gate-checker)"
-          AUTH="$(EDT_ADMIN="$EDT_ADMIN" EDT_KEY="$EDT_KEY" UA="$UA" python3 -c "
+          # edgetunnel 的后台 cookie = MD5MD5(UA + KEY + ADMIN)
+          # MD5MD5(x) = md5_hex( md5_hex(x)[7:27] )
+          AUTH="$(EDT_ADMIN="$EDT_ADMIN" EDT_KEY="$EDT_KEY" EDT_UA="$UA" python3 -c "
           import hashlib, os
-          s = os.environ['EDT_ADMIN'] + os.environ['EDT_KEY'] + os.environ['UA']
-          h = hashlib.md5(s.encode()).hexdigest()
+          s = os.environ['EDT_UA'] + os.environ['EDT_KEY'] + os.environ['EDT_ADMIN']
+          h = hashlib.md5(s.encode('utf-8')).hexdigest()
           print(hashlib.md5(h[7:27].encode()).hexdigest())
           ")"
-          echo "-> POST $EDT_BASE/admin/ADD.txt"
-          if curl -sS -f -X POST "$EDT_BASE/admin/ADD.txt" \
+          resp="$(curl -sS -X POST "$EDT_BASE/admin/ADD.txt" \
               -H "Cookie: auth=$AUTH" \
               -H "User-Agent: $UA" \
-              --data-binary @public/nodes.txt; then
-            echo
+              --data-binary @public/nodes.txt || true)"
+          if echo "$resp" | grep -q '"success":true'; then
             echo "-> 已同步 $(grep -c . public/nodes.txt) 条节点到 edgetunnel KV"
           else
-            echo "::warning::edgetunnel KV 同步失败 (订阅可能使用旧节点, 不影响 Pages 部署)"
+            echo "::warning::edgetunnel KV 同步失败, 响应: $resp"
           fi
         env:
           EDT_BASE: ${{ secrets.EDT_BASE }}
           EDT_ADMIN: ${{ secrets.EDT_ADMIN }}
           EDT_KEY: ${{ secrets.EDT_KEY }}
+          LC_ALL: C.UTF-8
+          PYTHONIOENCODING: utf-8
 
       - name: Ensure GitHub Pages is enabled (one-time auto setup)
         run: |
