@@ -41,6 +41,31 @@ jobs:
           CHECK_CONCURRENCY: "32"
           CHECK_TIMEOUT: "90"
 
+      - name: Sync nodes.txt into edgetunnel KV (auto refresh)
+        run: |
+          set -uo pipefail
+          UA="Mozilla/5.0 (compatible; gate-checker)"
+          AUTH="$(EDT_ADMIN="$EDT_ADMIN" EDT_KEY="$EDT_KEY" UA="$UA" python3 -c "
+          import hashlib, os
+          s = os.environ['EDT_ADMIN'] + os.environ['EDT_KEY'] + os.environ['UA']
+          h = hashlib.md5(s.encode()).hexdigest()
+          print(hashlib.md5(h[7:27].encode()).hexdigest())
+          ")"
+          echo "-> POST $EDT_BASE/admin/ADD.txt"
+          if curl -sS -f -X POST "$EDT_BASE/admin/ADD.txt" \
+              -H "Cookie: auth=$AUTH" \
+              -H "User-Agent: $UA" \
+              --data-binary @public/nodes.txt; then
+            echo
+            echo "-> 已同步 $(grep -c . public/nodes.txt) 条节点到 edgetunnel KV"
+          else
+            echo "::warning::edgetunnel KV 同步失败 (订阅可能使用旧节点, 不影响 Pages 部署)"
+          fi
+        env:
+          EDT_BASE: ${{ secrets.EDT_BASE }}
+          EDT_ADMIN: ${{ secrets.EDT_ADMIN }}
+          EDT_KEY: ${{ secrets.EDT_KEY }}
+
       - name: Ensure GitHub Pages is enabled (one-time auto setup)
         run: |
           code=$(curl -s -o /dev/null -w '%{http_code}' \
