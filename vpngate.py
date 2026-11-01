@@ -87,7 +87,7 @@ EDGE_HOSTS = [
         "EDGE_HOSTS",
         "saas.sin.fan:443,cdn.204910.best:443,www.mfyx.cn:443,p.etime.vip:443,cdn.ctn32.us.kg:443,cf.877774.xyz:443,spring.io:443,"
         "cf.nyanya.moe:443,www.sloomb.com:443,op.chinwa.eu.cc:443,www.leics.police.uk:443,securecircle.com:443,www.shopify.com:443,"
-        "www.carousell.sg:443,www.dbs.com.sg:443,openai.com:443,linear.app:443,www.bilibili.com:443,uspto.gov:443,www.vmware.com:443",
+        "www.carousell.sg:443,www.dbs.com.sg:443,openai.com:443,linear.app:443,uspto.gov:443,www.vmware.com:443",
     ).split(",")
     if h.strip()
 ]
@@ -250,9 +250,61 @@ def fetch_optimal_api_endpoints(api_urls_str):
             log("OPTIMAL API", f"拉取优选 API 失败 ({url}): {e}")
     return endpoints
 
+# ---------------------------------------------------------------------------
+# Cloudflare 网段判定 (入口必须是 Cloudflare IP 才能用 SNI 覆写路由)
+# ---------------------------------------------------------------------------
+CLOUDFLARE_IPV4_RANGES = [
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+    "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+    "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+]
+
+
+def _cf_networks():
+    import ipaddress
+    return [ipaddress.ip_network(c) for c in CLOUDFLARE_IPV4_RANGES]
+
+
+def is_cloudflare_endpoint(entry):
+    """
+    判断入口 host:port 是否指向 Cloudflare 网段
+    返回 True=是 / False=否 / None=无法判定(DNS 失败等)
+    """
+    import ipaddress
+    import socket
+    host = str(entry).split("#")[0].strip()
+    if host.startswith("["):
+        host = host[1:host.find("]")] if "]" in host else host[1:]
+    elif host.count(":") == 1:
+        host = host.split(":")[0]
+    if not host:
+        return None
+    try:
+        ipaddress.ip_address(host)
+        ips = [host]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, None, socket.AF_INET)
+            ips = sorted({info[4][0] for info in infos})
+        except Exception:
+            return None
+        if not ips:
+            return None
+    nets = _cf_networks()
+    for ip in ips:
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if any(addr in net for net in nets):
+            return True
+    return False
+
 def get_combined_edge_hosts():
     """
-    合并静态优选域名与优选 API 端点
+    合并静态优选域名与优选 API 端点, 并过滤掉非 Cloudflare 网段的入口
+    (入口必须是 Cloudflare IP, 否则 TLS SNI 覆写失效, 会直接握手失败)
     """
     # 1. 优先读取 HOSTS_ENTRY 或 EDGE_HOSTS
     _entry = os.environ.get("HOSTS_ENTRY", "").strip()
@@ -269,7 +321,21 @@ def get_combined_edge_hosts():
             seen.add(h)
             combined.append(h)
 
+    # 4. 过滤: 只保留解析到 Cloudflare 网段的入口
+    kept, dropped = [], []
+    for h in combined:
+        verdict = is_cloudflare_endpoint(h)
+        if verdict is True:
+            kept.append(h)
+        elif verdict is False:
+            dropped.append(h)
+        else:
+            kept.append(h)  # 无法判定时保守保留
+    if kept:
+        combined = kept
     log("EDGE POOL", f"汇总入口地址池: 静态域名 {len(static_hosts)} 个, API 获取 {len(api_hosts)} 个, 合并有效入口共 {len(combined)} 个")
+    if dropped:
+        log("EDGE POOL", f"已过滤非 Cloudflare 入口 {len(dropped)} 个: {', '.join(dropped)}")
     return combined if combined else EDGE_HOSTS
 
 # ---------------------------------------------------------------------------
